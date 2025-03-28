@@ -22,6 +22,10 @@ def _default_db_path_tui() -> Path:
 from textual.app import App, ComposeResult
 from textual.containers import Container, VerticalScroll
 from textual.logging import TextualHandler # For TUI logging
+from textual.app import App, ComposeResult
+from textual.containers import Container, VerticalScroll
+from textual.events import Key # Added for on_key
+from textual.logging import TextualHandler # For TUI logging
 from textual.reactive import var
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, Log, Static, Switch, Label, ProgressBar # Added ProgressBar
@@ -160,8 +164,18 @@ class SettingsScreen(Screen):
     BINDINGS = [
         ("escape", "app.pop_screen", "Back"),
         ("ctrl+s", "save_settings", "Save"),
-        ("ctrl+v", "paste_api_token", "Paste Token"), # Added paste binding
+        # ("ctrl+v", "paste_api_token", "Paste Token"), # Removed screen binding, will handle in on_key
     ]
+
+    def on_key(self, event: Key) -> None:
+        """Handle key presses for the settings screen."""
+        # Check if Ctrl+V was pressed and the API token input is focused
+        if event.key == "ctrl+v":
+            api_token_input = self.query_one("#api_token", Input)
+            if self.app.focused is api_token_input:
+                logging.info("Ctrl+V detected while API token input focused.")
+                self.action_paste_api_token()
+                event.prevent_default() # Stop the Input widget from also handling it
 
     def compose(self) -> ComposeResult:
         config_data = self.app.config_data

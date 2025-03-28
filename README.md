@@ -30,10 +30,10 @@ This package provides two interfaces:
 
 1. Launch the TUI by running: `drpg-tui`
 2. Navigate to the `Settings` screen using the button or the `s` key.
-3. Enter your DriveThruRPG API key (obtained from your account settings page) and configure the desired library path and other options.
+3. Enter your DriveThruRPG API key, configure the desired library path, number of download threads, validation settings, and other options.
 4. Save the settings (Ctrl+S or the Save button). The settings are stored in `~/.drpg_tui_config.json`.
 5. Go back to the main screen (Escape or Back button).
-6. Press the `Sync Library` button to start downloading/synchronizing your purchases. Progress and logs will be displayed.
+6. Press the `Sync Library` button to start downloading/synchronizing your purchases. Progress and logs will be displayed directly in the TUI during the sync process.
 
 ## Compatibility
 
@@ -77,6 +77,12 @@ all the digital content you have purchased, but instead of downloading each file
 it will print one line of information to show what file *would* have been downloaded
 if the `--dry-run` flag wasn't on. Use this if you want to test out the app without
 taking the time to download anything.
+
+You can validate downloads by calculating checksums after download using `--validate` / `-v`.
+
+You can specify the number of parallel download threads using `--threads <number>` / `-x <number>` (defaults to 5).
+
+You can change the location of the library metadata database using `--db-path path/to/your/database.db`. Defaults to `~/.drpg/library.db`.
 
 For more information, run the script with `--help`.
 

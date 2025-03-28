@@ -328,7 +328,11 @@ class SyncScreen(Screen):
             # Create Config instance dynamically
             sync_config = Config()
             for key, value in self.app.config_data.items():
-                if hasattr(sync_config, key):
+                # Map TUI config key "api_token" to Config attribute "token"
+                if key == "api_token":
+                    if hasattr(sync_config, "token"):
+                        setattr(sync_config, "token", value)
+                elif hasattr(sync_config, key):
                     # Special handling for paths
                     if key == "library_path":
                         setattr(sync_config, key, library_path)

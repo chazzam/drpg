@@ -17,6 +17,7 @@ import httpx
 
 import drpg
 from drpg.config import Config
+from drpg.sync import DrpgSync  # Import DrpgSync here
 
 if TYPE_CHECKING:  # pragma: no cover
     from types import FrameType, TracebackType
@@ -32,7 +33,15 @@ def run() -> None:
     config = _parse_cli()
     _setup_logger(config.log_level)
 
-    drpg.DrpgSync(config).sync()
+    # Ensure the database directory exists
+    config.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    DrpgSync(config).sync()
+
+
+def _default_db_path() -> Path:
+    # Simple cross-platform default in user's home directory
+    return Path.home() / ".drpg" / "library.db"
 
 
 def _parse_cli(args: CliArgs | None = None) -> Config:
@@ -94,6 +103,12 @@ def _parse_cli(args: CliArgs | None = None) -> Config:
         action="store_true",
         default=environ.get("DRPG_DRY_RUN", "false").lower() == "true",
         help="Determine what should be downloaded, but do not download it. Defaults to false",
+    )
+    parser.add_argument(
+        "--db-path",
+        type=Path,
+        default=environ.get("DRPG_DB_PATH", _default_db_path()),
+        help=f"Path to the library metadata database. Defaults to {_default_db_path()}",
     )
 
     compability_group = parser.add_mutually_exclusive_group()

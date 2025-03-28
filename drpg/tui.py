@@ -8,8 +8,15 @@ from logging.handlers import QueueHandler, QueueListener
 from queue import Queue
 
 # Import core drpg components
+import os # Needed for default db path logic
 from drpg.config import Config
 from drpg.sync import DrpgSync
+# Reuse the default db path logic if possible, or replicate it
+# Let's replicate for simplicity here to avoid potential import cycles/issues
+def _default_db_path_tui() -> Path:
+    # Simple cross-platform default in user's home directory or config dir
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return config_home / "drpg" / "library.db"
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, VerticalScroll
@@ -32,6 +39,7 @@ DEFAULT_CONFIG = {
     "threads": 5,
     "log_level": "INFO",
     "dry_run": False,
+    "db_path": str(_default_db_path_tui()), # Add default db_path
 }
 
 # --- Configuration Loading/Saving ---
@@ -43,11 +51,16 @@ def load_config() -> dict:
                 data = json.load(f)
                 # Ensure all keys are present, add defaults if missing
                 config = DEFAULT_CONFIG.copy()
-                config.update(data) # Overwrite defaults with loaded data
-                # Ensure threads is int
+                # Ensure loaded keys exist in defaults before updating
+                valid_data = {k: v for k, v in data.items() if k in config}
+                config.update(valid_data) # Overwrite defaults with loaded data
+                # Ensure specific types
                 config["threads"] = int(config.get("threads", 5))
+                # Ensure paths are strings for JSON, but we'll convert later
+                config["library_path"] = str(config.get("library_path", DEFAULT_CONFIG["library_path"]))
+                config["db_path"] = str(config.get("db_path", DEFAULT_CONFIG["db_path"]))
                 return config
-        except (json.JSONDecodeError, IOError, ValueError) as e:
+        except (json.JSONDecodeError, IOError, ValueError, TypeError) as e: # Added TypeError
             # Use basic print for early errors before logging might be set up
             print(f"Error loading config file {CONFIG_FILE}: {e}. Using defaults.", file=sys.stderr)
             return DEFAULT_CONFIG.copy()
@@ -55,10 +68,21 @@ def load_config() -> dict:
         return DEFAULT_CONFIG.copy()
 
 def save_config(config_data: dict) -> None:
-    """Saves configuration to JSON file."""
+    """Saves configuration to JSON file, ensuring paths are strings."""
     try:
+        # Create a copy to modify for saving
+        save_data = config_data.copy()
+        # Ensure paths are strings
+        if isinstance(save_data.get("library_path"), Path):
+             save_data["library_path"] = str(save_data["library_path"])
+        if isinstance(save_data.get("db_path"), Path):
+             save_data["db_path"] = str(save_data["db_path"])
+
+        # Ensure parent directory for config file exists
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
         with open(CONFIG_FILE, "w") as f:
-            json.dump(config_data, f, indent=4)
+            json.dump(save_data, f, indent=4)
         logging.info(f"Configuration saved to {CONFIG_FILE}")
     except IOError as e:
         logging.error(f"Error saving config file {CONFIG_FILE}: {e}")
@@ -204,10 +228,13 @@ class SettingsScreen(Screen):
         new_config["omit_publisher"] = self.query_one("#omit_publisher", Switch).value
         new_config["dry_run"] = self.query_one("#dry_run", Switch).value
 
+        # Preserve db_path (it's not editable here)
+        new_config["db_path"] = self.app.config_data.get("db_path", DEFAULT_CONFIG["db_path"])
+
         # TODO: Update log level
 
-        self.app.config_data = new_config
-        save_config(self.app.config_data)
+        self.app.config_data = new_config # Update app's config
+        save_config(self.app.config_data) # Save the updated config
         self.app.notify("Settings saved.", title="Success")
 
         try:
@@ -253,18 +280,28 @@ class SyncScreen(Screen):
         # --- Prepare Config for DrpgSync ---
         # Create a Config object instance
         try:
-            # Convert library_path back to Path object
-            library_path = Path(self.app.config_data["library_path"])
+            # Convert paths back to Path objects for DrpgSync
+            library_path = Path(self.app.config_data["library_path"]).expanduser()
+            db_path = Path(self.app.config_data["db_path"]).expanduser()
+
+            # Ensure db directory exists before sync
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+
             # Create Config instance dynamically
             sync_config = Config()
             for key, value in self.app.config_data.items():
                 if hasattr(sync_config, key):
-                    # Special handling for path
+                    # Special handling for paths
                     if key == "library_path":
                         setattr(sync_config, key, library_path)
+                    elif key == "db_path":
+                         setattr(sync_config, key, db_path)
+                    # Ensure threads is int
+                    elif key == "threads":
+                         setattr(sync_config, key, int(value))
                     else:
                         setattr(sync_config, key, value)
-        except Exception as e:
+        except (KeyError, ValueError, TypeError, Exception) as e: # Catch potential errors during config creation
             log_widget.write(f"[bold red]Error creating config:[/bold red] {e}")
             status_widget.update("[bold red]Sync failed (Config Error)[/bold red]")
             self.sync_running = False

@@ -15,3 +15,4 @@ class Config:
     compatibility_mode: bool
     omit_publisher: bool
     threads: int
+    db_path: Path

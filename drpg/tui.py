@@ -273,7 +273,12 @@ class SettingsScreen(Screen):
                 self.app.notify("Clipboard is empty.", title="Info", severity="information")
         except pyperclip.PyperclipException as e:
             logging.error(f"Clipboard error: {e}")
-            self.app.notify(f"Could not access clipboard: {e}", title="Error", severity="error")
+            error_message = f"Could not access clipboard: {e}"
+            # Check if on Linux and provide a more specific hint
+            if sys.platform.startswith('linux'):
+                error_message += "\n\nOn Linux, this often means 'xclip' or 'xsel' is not installed.\nTry: sudo apt install xclip (or equivalent for your distribution)."
+            # Use a longer timeout for the more detailed message
+            self.app.notify(error_message, title="Clipboard Error", severity="error", timeout=10)
         except Exception as e: # Catch potential query errors etc.
             logging.error(f"Error during paste action: {e}")
             self.app.notify("An unexpected error occurred during paste.", title="Error", severity="error")
@@ -291,7 +296,7 @@ class SyncScreen(Screen):
         yield Header()
         yield Static("Syncing library...", id="sync-status")
         # TODO: Add ProgressBar widget
-        yield Log(id="sync-log", highlight=True, markup=True)
+        yield Log(id="sync-log", highlight=True)
         yield Footer()
 
     def on_mount(self) -> None:

@@ -9,19 +9,31 @@ This script runs with Python 3.9 and newer.
 You can install dRPG from PyPI:
 ```bash
 pip install --user drpg
-drpg --help  # or python -m drpg --help
+drpg --help  # For the command-line interface
+drpg-tui     # To launch the new Terminal UI
 ```
 
-## Usage
+This package provides two interfaces:
+*   `drpg`: The original command-line interface (CLI).
+*   `drpg-tui`: A new Terminal User Interface (TUI) for a more interactive experience.
+
+## Usage (CLI)
 
 1. Go to [your account settings](https://www.drivethrurpg.com/en/account/settings)
    and generate a new application key in the "Library App Keys" section.
 2. Copy the key and run the script: `drpg --token <YOUR_DRPG_TOKEN>` - or set
    `DRPG_TOKEN` env variable and run `drpg`.
-3. Now just sit, relax and wait. Initial synchronization may take a while so
-   why don't you grab a cup of tea or whatever your favourite beverage is. On
-   consecutive runs the script will download only new and changed files which
-   will be a way faster.
+3. The script will download your library. Initial synchronization may take a while.
+   On consecutive runs, it will only download new and changed files.
+
+## Usage (TUI)
+
+1. Launch the TUI by running: `drpg-tui`
+2. Navigate to the `Settings` screen using the button or the `s` key.
+3. Enter your DriveThruRPG API key (obtained from your account settings page) and configure the desired library path and other options.
+4. Save the settings (Ctrl+S or the Save button). The settings are stored in `~/.drpg_tui_config.json`.
+5. Go back to the main screen (Escape or Back button).
+6. Press the `Sync Library` button to start downloading/synchronizing your purchases. Progress and logs will be displayed.
 
 ## Compatibility
 

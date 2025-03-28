@@ -1,0 +1,97 @@
+/* Styling for the DRPG TUI */
+
+Screen {
+    /* Center content vertically and horizontally */
+    align: center middle;
+}
+
+/* Container for the main screen content */
+#main-container {
+    align: center middle;
+    padding: 1;
+    /* border: thick solid $accent; */ /* Optional border */
+    width: 60;
+    height: auto; /* Adjust height automatically */
+    max-height: 80%; /* Prevent it from taking full screen */
+}
+
+/* Style for the library path display */
+#library-path-display {
+    margin-bottom: 1;
+    text-align: center;
+    width: 100%;
+}
+
+/* General button styling */
+Button {
+    width: 80%;
+    margin: 1 0; /* Add vertical margin */
+}
+
+/* Settings Screen Specifics */
+SettingsScreen {
+    /* Allow content to scroll if it overflows */
+    overflow-y: auto;
+}
+
+#settings-form {
+    padding: 1 2; /* Add padding inside the form */
+    width: 80; /* Set a width for the form */
+    height: auto; /* Auto height */
+    /* border: thick solid $accent; */ /* Temporarily commented out */
+    margin-top: 1;
+    margin-bottom: 1;
+}
+
+/* Style for labels in the settings form */
+#settings-form > .label {
+    margin-top: 1;
+    margin-bottom: 0;
+}
+
+/* Style for inputs in the settings form */
+#settings-form > Input {
+    width: 100%;
+    margin-bottom: 1;
+}
+
+/* Container for aligning Switch and its Label horizontally */
+.switch-container {
+  align-horizontal: left;
+  align-vertical: middle;
+  margin-top: 1;
+    height: auto; /* Auto height for container */
+    width: 100%;
+}
+
+/* Style for Switches */
+.switch-container > Switch {
+    width: auto; /* Let switch take its natural size */
+    margin-right: 1;
+}
+
+/* Style for inline labels next to switches */
+.switch-container > .label.inline {
+    width: auto; /* Let label take its natural size */
+    margin: 0; /* Remove extra margins */
+}
+
+/* Sync Screen Specifics */
+SyncScreen {
+    /* Allow log to scroll */
+    overflow: hidden; /* Prevent screen scroll, log will scroll */
+}
+
+#sync-status {
+    dock: top;
+    width: 100%;
+    text-align: center;
+    margin: 1 0;
+    height: 1; /* Fixed height for status */
+}
+
+#sync-log {
+    /* Log widget will fill remaining space */
+    /* border: round $accent; */ /* Temporarily commented out */
+    margin: 1;
+}

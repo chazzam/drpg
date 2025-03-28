@@ -126,7 +126,22 @@ def _parse_cli(args: CliArgs | None = None) -> Config:
         help="Omit the publisher name in the target path.",
     )
 
-    return parser.parse_args(args, namespace=Config())
+    parsed_args = parser.parse_args(args)
+
+    # Manually create and populate Config object since init=False
+    config = Config()
+    config.token = parsed_args.token
+    config.library_path = parsed_args.library_path
+    config.use_checksums = parsed_args.use_checksums
+    config.validate = parsed_args.validate
+    config.log_level = parsed_args.log_level
+    config.dry_run = parsed_args.dry_run
+    config.compatibility_mode = parsed_args.compatibility_mode
+    config.omit_publisher = parsed_args.omit_publisher
+    config.threads = parsed_args.threads
+    config.db_path = parsed_args.db_path
+
+    return config
 
 
 def _default_dir() -> Path:

@@ -6,6 +6,7 @@ import json # For config saving/loading
 import sys
 from logging.handlers import QueueHandler, QueueListener
 from queue import Queue
+import pyperclip # Added for clipboard access
 
 # Import core drpg components
 import os # Needed for default db path logic
@@ -159,6 +160,7 @@ class SettingsScreen(Screen):
     BINDINGS = [
         ("escape", "app.pop_screen", "Back"),
         ("ctrl+s", "save_settings", "Save"),
+        ("ctrl+v", "paste_api_token", "Paste Token"), # Added paste binding
     ]
 
     def compose(self) -> ComposeResult:
@@ -244,6 +246,23 @@ class SettingsScreen(Screen):
             logging.warning(f"Could not update main screen path display after save: {e}")
 
         self.app.pop_screen()
+
+    def action_paste_api_token(self) -> None:
+        """Paste clipboard content into the API token input."""
+        try:
+            clipboard_content = pyperclip.paste()
+            if clipboard_content:
+                api_token_input = self.query_one("#api_token", Input)
+                api_token_input.value = clipboard_content
+                self.app.notify("API Token pasted from clipboard.", title="Pasted")
+            else:
+                self.app.notify("Clipboard is empty.", title="Info", severity="information")
+        except pyperclip.PyperclipException as e:
+            logging.error(f"Clipboard error: {e}")
+            self.app.notify(f"Could not access clipboard: {e}", title="Error", severity="error")
+        except Exception as e: # Catch potential query errors etc.
+            logging.error(f"Error during paste action: {e}")
+            self.app.notify("An unexpected error occurred during paste.", title="Error", severity="error")
 
 
 class SyncScreen(Screen):

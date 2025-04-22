@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 import json # For config saving/loading
 import sys
+import functools # Added for partial application
 from logging.handlers import QueueHandler, QueueListener
 from queue import Queue
 import pyperclip # Added for clipboard access
@@ -329,20 +330,26 @@ class SyncScreen(Screen):
             sync_config = Config()
             for key, value in self.app.config_data.items():
                 # Map TUI config key "api_token" to Config attribute "token"
+                config_key = key
                 if key == "api_token":
-                    if hasattr(sync_config, "token"):
-                        setattr(sync_config, "token", value)
-                elif hasattr(sync_config, key):
+                    config_key = "token" # Map the key name
+
+                # Check if the *target* attribute name exists in the Config class definition
+                # (We can check against Config.__annotations__ or Config.__dataclass_fields__)
+                if config_key in Config.__annotations__: # Check against the class definition
                     # Special handling for paths
-                    if key == "library_path":
-                        setattr(sync_config, key, library_path)
-                    elif key == "db_path":
-                         setattr(sync_config, key, db_path)
+                    if config_key == "library_path":
+                        setattr(sync_config, config_key, library_path) # Use the already created Path object
+                    elif config_key == "db_path":
+                         setattr(sync_config, config_key, db_path) # Use the already created Path object
                     # Ensure threads is int
-                    elif key == "threads":
-                         setattr(sync_config, key, int(value))
+                    elif config_key == "threads":
+                         setattr(sync_config, config_key, int(value))
+                    # Set other attributes directly
                     else:
-                        setattr(sync_config, key, value)
+                        setattr(sync_config, config_key, value)
+                # else: # Optional: Log if a key from config doesn't match any Config attribute
+                #    logging.warning(f"Config key '{key}' not found in Config class, skipping.")
         except (KeyError, ValueError, TypeError, Exception) as e: # Catch potential errors during config creation
             log_widget.write(f"[bold red]Error creating config:[/bold red] {e}")
             status_widget.update("[bold red]Sync failed (Config Error)[/bold red]")
@@ -351,11 +358,10 @@ class SyncScreen(Screen):
 
         # --- Run Sync in Worker ---
         try:
-            drpg_syncer = DrpgSync(sync_config)
-            # Pass the log widget write method to the worker
+            # Pass the config object to the worker, not the syncer instance
+            target_with_args = functools.partial(self.sync_thread_target, sync_config)
             self.app.run_worker(
-                self.sync_thread_target, # The function to run in the worker
-                drpg_syncer,             # Argument for the target function
+                target_with_args,        # Use the wrapped function with config
                 thread=True,             # Run in a separate thread
                 exclusive=True,          # Prevent other workers running
                 group="sync_worker",     # Group for potential management
@@ -366,10 +372,20 @@ class SyncScreen(Screen):
             status_widget.update("[bold red]Sync failed (Worker Error)[/bold red]")
             self.sync_running = False
 
-    def sync_thread_target(self, syncer: DrpgSync) -> None:
+    def sync_thread_target(self, sync_config: Config) -> None: # Accept Config object
         """The actual function executed by the background worker."""
         log_widget = self.query_one("#sync-log", Log)
         status_widget = self.query_one("#sync-status", Static)
+
+        # Create the syncer *inside* the worker thread
+        try:
+            syncer = DrpgSync(sync_config)
+        except Exception as e:
+            # Use call_from_thread for UI updates from worker
+            self.app.call_from_thread(log_widget.write, f"[bold red]Error creating DrpgSync in worker:[/bold red] {e}")
+            self.app.call_from_thread(status_widget.update, "[bold red]Sync failed (Syncer Init Error)[/bold red]")
+            self.sync_running = False # Ensure sync_running is reset
+            return # Stop execution if syncer creation fails
 
         # --- Logging Setup for Worker Thread ---
         # Get the root logger used by drpg modules

@@ -1,4 +1,4 @@
-from drpg.types import PrepareDownloadUrlResponse
+from drpg.custom_types import PrepareDownloadUrlResponse
 
 
 class PrepareDownloadUrlResponseFixture:

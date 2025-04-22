@@ -14,14 +14,14 @@ from typing import TYPE_CHECKING, NamedTuple
 import httpx
 
 from drpg.api import DrpgApi
-from drpg.types import PrepareDownloadUrlResponse # Import this type
+from drpg.custom_types import PrepareDownloadUrlResponse # Import this type
 
 if TYPE_CHECKING:  # pragma: no cover
     from pathlib import Path
     from typing import Any, Callable
 
     from drpg.config import Config
-    from drpg.types import DownloadItem, Product
+    from drpg.custom_types import DownloadItem, Product
 
     NoneCallable = Callable[..., None]
     Decorator = Callable[[NoneCallable], NoneCallable]

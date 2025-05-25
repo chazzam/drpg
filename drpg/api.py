@@ -4,7 +4,8 @@ import logging
 from time import sleep
 from typing import TYPE_CHECKING
 
-import httpx
+import cloudscraper
+import requests
 
 from drpg.types import PrepareDownloadUrlResponse
 
@@ -20,37 +21,29 @@ JSON_MIME = "application/json"
 class DrpgApi:
     """Low-level REST API client for DriveThruRPG"""
 
-    API_URL = "https://api.drivethrurpg.com/api/vBeta/"
+    API_URL = "https://api.drivethrurpg.com/api/vBeta"
 
     class PrepareDownloadUrlException(Exception):
         UNEXPECTED_RESPONSE = "Got response with unexpected schema"
         REQUEST_FAILED = "Got non 2xx response"
 
     def __init__(self, api_key: str):
-        logger.debug("Preparing httpx client")
-        self._client = httpx.Client(
-            base_url=self.API_URL,
-            http1=False,
-            http2=True,
-            timeout=30.0,
-            headers={
-                "Content-Type": JSON_MIME,
-                "Accept": JSON_MIME,
-                "Accept-Encoding": "gzip, deflate",
-                "User-Agent": "Mozilla/5.0",
-                "Connection": "keep-alive",
-            },
-        )
+        logger.debug("Preparing cloudscraper client")
+        self._client = cloudscraper.create_scraper()
+        self._client.headers["Content-Type"] = JSON_MIME
+        self._client.headers["Accept"] = JSON_MIME
+        self._client.headers["Accept-Encoding"] = "gzip,deflate"
+        self._client.headers["Connection"] = "keep-alive"
         self._api_key = api_key
 
     def token(self) -> TokenResponse:
         """Authenticate http client with access token based on an API key."""
         resp = self._client.post(
-            "auth_key",
+            f"{self.API_URL}/auth_key",
             params={"applicationKey": self._api_key},
         )
 
-        if resp.status_code == httpx.codes.UNAUTHORIZED:
+        if resp.status_code == requests.codes.UNAUTHORIZED:
             raise AttributeError("Provided token is invalid")
 
         login_data: TokenResponse = resp.json()
@@ -75,11 +68,11 @@ class DrpgApi:
             "index": item_id,
             "getChecksums": 0,  # Official clients defaults to 1
         }
-        resp = self._client.get(f"order_products/{product_id}/prepare", params=task_params)
+        resp = self._client.get(f"{self.API_URL}/order_products/{product_id}/prepare", params=task_params)
 
         def _parse_message(resp) -> PrepareDownloadUrlResponse:
             message: PrepareDownloadUrlResponse = resp.json()
-            if resp.is_success:
+            if resp.ok:
                 expected_keys = PrepareDownloadUrlResponse.__required_keys__
                 if isinstance(message, dict) and expected_keys.issubset(message.keys()):
                     logger.debug("Got download url for %s - %s: %s", product_id, item_id, message)
@@ -108,7 +101,7 @@ class DrpgApi:
         while (data := _parse_message(resp))["status"].startswith("Preparing"):
             logger.debug("Waiting for download link for: %s - %s", product_id, item_id)
             sleep(2)
-            resp = self._client.get(f"order_products/{product_id}/check", params=task_params)
+            resp = self._client.get(f"{self.API_URL}/order_products/{product_id}/check", params=task_params)
 
         logger.debug("Got download link for: %s - %s", product_id, item_id)
         return data
@@ -117,7 +110,7 @@ class DrpgApi:
         """List products from a specified page."""
 
         return self._client.get(
-            "order_products",
+            f"{self.API_URL}/order_products",
             params={
                 "getChecksum": 1,
                 "getFilters": 0,  # Official clients defaults to 1

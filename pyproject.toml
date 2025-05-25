@@ -21,7 +21,9 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: CPython",
 ]
 dependencies = [
+    "cloudscraper>=1.2.71",
     "httpx[http2]>=0.23",
+    "requests>=2.32.3",
 ]
 
 [dependency-groups]

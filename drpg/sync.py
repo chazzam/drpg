@@ -21,7 +21,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from typing import Any, Callable
 
     from drpg.config import Config
-    from drpg.custom_types import DownloadItem, Product
+    from drpg.custom_types import DownloadItem, Product, Checksum
 
     NoneCallable = Callable[..., None]
     Decorator = Callable[[NoneCallable], NoneCallable]
@@ -35,6 +35,13 @@ class DbFileInfo(NamedTuple):
     local_path: str | None
     local_last_synced: str | None
     local_checksum: str | None
+    validated: bool | None
+
+class DbProductInfo(NamedTuple):
+    product_id: int | None
+    name: str | None
+    publisher_name: str | None
+    last_api_check: str | None
 
 
 def suppress_errors(*errors: type[Exception]) -> Decorator:
@@ -73,6 +80,7 @@ class DrpgSync:
         local_path TEXT NOT NULL,
         local_last_synced TEXT, -- Store as ISO string
         local_checksum TEXT,
+        validated INTEGER NOT NULL,
         PRIMARY KEY (product_id, item_id),
         FOREIGN KEY (product_id) REFERENCES products(product_id) ON DELETE CASCADE
     );
@@ -95,27 +103,76 @@ class DrpgSync:
             self._db_conn.executescript(self._DB_SCHEMA)
         logger.debug("Database schema initialized at %s", self._config.db_path)
 
+    def _get_db_product_info(self):
+        """Fetch file metadata from the database."""
+        cursor = self._db_conn.execute(
+            """
+            SELECT product_id, name, publisher_name, last_api_check
+            FROM products
+            WHERE product_id = *
+            """,
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            yield DbProductInfo(0, "", "", "")
+
+        for row in rows:
+            yield DbProductInfo(*row)
+
+    def _get_db_product_files(self, product_id:int):
+        """Fetch file metadata from the database."""
+        cursor = self._db_conn.execute(
+            """
+            SELECT item_id, local_path, api_checksum, api_last_modified
+            FROM files
+            WHERE product_id = ?
+            """,
+            (str(product_id)),
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            yield DownloadItem(index=0, filename="", checksums=[Checksum(checksum="", checksumDate="")])
+        else:
+            for row in rows:
+                dli = DownloadItem(
+                    index=row[0], 
+                    filename=row[1],
+                    checksums=[Checksum(checksum=row[2], checksumDate=row[3])]
+                )
+                yield dli
+
     def sync(self) -> None:
         """Download all new, updated and not yet synced items to a sync directory using DB cache."""
         logger.info("Authenticating")
         self._api.token()
-        logger.info("Fetching products list from API")
-        self._touched_items.clear() # Reset for this sync run
 
         # Prepare arguments for parallel processing
         process_item_args = []
-        try:
-            for product in self._api.customer_products():
-                # Update product info in DB (or insert if new)
-                self._update_product_in_db(product)
-                for item in product["files"]:
-                    item_key = (product["orderProductId"], item["index"])
-                    self._touched_items.add(item_key) # Mark as seen in API
-                    process_item_args.append((product, item))
-        except Exception as e:
-            logger.error("Failed to fetch products from API: %s", e, exc_info=True)
-            self._close_db()
-            return
+
+        if self._config.use_cached_products:
+            logger.info("Fetching products list from API")
+            self._touched_items.clear() # Reset for this sync run
+
+            try:
+                for product in self._api.customer_products():
+                    # Update product info in DB (or insert if new)
+                    self._update_product_in_db(product)
+                    for item in product["files"]:
+                        item_key = (product["orderProductId"], item["index"])
+                        self._touched_items.add(item_key) # Mark as seen in API
+                        api_checksum = _newest_checksum(item)
+                        # Cache this file entry
+                        self._update_file_db(product, item, self._db_conn, False, api_checksum, None, True)
+                        process_item_args.append((product, item))
+            except Exception as e:
+                logger.error("Failed to fetch products from API: %s", e, exc_info=True)
+                self._close_db()
+                return
+        else:
+            # Loop over product files cached in the db and add them for processing
+            for prod in self._get_db_product_info():
+                for file in self._get_db_product_files(prod.product_id):
+                    process_item_args.append((product, file))
 
         logger.info("Checking %d items against local cache/filesystem", len(process_item_args))
         # Use ThreadPool for downloading, but decisions are made sequentially before this
@@ -152,11 +209,25 @@ class DrpgSync:
                 (product["orderProductId"], product["name"], publisher_name, now),
             )
 
+    def _cache_product_in_db(self, product: Product) -> None:
+        """Insert or update product information in the database."""
+        now = datetime.now(dt_timezone.utc).isoformat()
+        publisher_name = product.get("publisher", {}).get("name")
+        with self._db_conn:
+            self._db_conn.execute(
+                """
+                INSERT INTO products (product_id, name, publisher_name, last_api_check)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(product_id) DO NOTHING;
+                """,
+                (product["orderProductId"], product["name"], publisher_name, now),
+            )
+
     def _get_db_file_info(self, product_id: int, item_id: int) -> DbFileInfo | None:
         """Fetch file metadata from the database."""
         cursor = self._db_conn.execute(
             """
-            SELECT api_last_modified, api_checksum, local_path, local_last_synced, local_checksum
+            SELECT api_last_modified, api_checksum, local_path, local_last_synced, local_checksum, validated
             FROM files
             WHERE product_id = ? AND item_id = ?
             """,
@@ -164,7 +235,7 @@ class DrpgSync:
         )
         row = cursor.fetchone()
         return DbFileInfo(*row) if row else None
-
+    
     def _need_download_db(self, product: Product, item: DownloadItem) -> bool:
         """Check DB cache and filesystem to determine if download is needed."""
         product_id = product["orderProductId"]
@@ -173,11 +244,31 @@ class DrpgSync:
         db_info = self._get_db_file_info(product_id, item_id)
 
         if not db_info:
-            logger.debug(
-                "Needs download: %s - %s: No record in DB cache",
-                product["name"], item["filename"]
-            )
-            return True
+            # If not using the checksum, we won't download it again if it exists. Just add it to the db instead
+            if expected_path.exists():
+                local_checksum = md5(expected_path.read_bytes()).hexdigest()
+                api_checksum = _newest_checksum(item)
+                if not self._config.use_checksums and not self._config.validate:
+                    self._update_file_db(product, item, self._db_conn, False, api_checksum, local_checksum)
+                    logger.info("File exists, not updating: %s - %s", product["name"], item["filename"])
+                    return False
+
+                if api_checksum != local_checksum:
+                    logger.debug(
+                        "Needs download: %s - %s: checksum failure ('%s' vs '%s')",
+                        product["name"], item["filename"], local_checksum, api_checksum
+                    )
+                    return True
+
+                self._update_file_db(product, item, self._db_conn, True, api_checksum, local_checksum)
+                logger.info("File exists, Up to date: %s - %s", product["name"], item["filename"])
+                return False
+            elif not expected_path.exists():
+                logger.debug(
+                    "Needs download: %s - %s: No record in DB cache",
+                    product["name"], item["filename"]
+                )
+                return True
 
         # Check if path changed due to config
         if str(expected_path) != db_info.local_path:
@@ -199,27 +290,87 @@ class DrpgSync:
         # Check checksum if enabled
         if self._config.use_checksums:
             api_checksum = _newest_checksum(item)
-            if api_checksum != db_info.api_checksum:
-                 logger.debug(
+            if api_checksum != db_info.api_checksum or not expected_path.exists():
+                logger.debug(
                     "Needs download: %s - %s: API checksum changed ('%s' vs '%s')",
                     product["name"], item["filename"], db_info.api_checksum, api_checksum
                 )
-                 return True
-            # Optional: If checksums match, double-check filesystem if file exists?
-            # Could add a check here against path.exists() and local checksum if paranoid.
-            # For performance, we trust the DB if checksums match.
+                return True
+            # If we never validated the file against the checksum, we don't know if the file matches yet
+            if not db_info.validated and expected_path.exists():
+                local_checksum = md5(expected_path.read_bytes()).hexdigest()
+                if api_checksum != local_checksum:
+                    logger.debug(
+                        "Needs download: %s - %s: checksum failure ('%s' vs '%s')",
+                        product["name"], item["filename"], local_checksum, api_checksum
+                    )
+                    return True
+                # We have now validated the download, so update the db as such
+                self._update_file_db(product, item, self._db_conn, True, api_checksum, local_checksum)
+                return False
 
         # Fallback: Check if file actually exists at the cached path (maybe deleted manually)
         # This adds a stat call but prevents errors if DB is out of sync with reality.
         if not expected_path.exists():
-             logger.debug(
+            logger.debug(
                 "Needs download: %s - %s: File missing at cached path '%s'",
                 product["name"], item["filename"], expected_path
             )
-             return True
+            return True
 
         logger.info("Up to date (cached): %s - %s", product["name"], item["filename"])
         return False
+
+    def _update_file_db(
+            self, 
+            product: Product, 
+            item: DownloadItem, 
+            db_conn: Connection, 
+            validated: bool, 
+            api_checksum: str | None, 
+            local_checksum: str | None,
+            cache: bool  = False,
+    ) -> None:
+        product_id = product["orderProductId"]
+        item_id = item["index"]
+        path = self._file_path(product, item)
+        # 5. Update Database
+        api_mod_iso = product["fileLastModified"] # Already ISO string
+        datestamp = datetime.now(dt_timezone.utc).isoformat()
+        query = """
+                INSERT INTO files (
+                    product_id, item_id, filename, api_last_modified, api_checksum,
+                    local_path, local_last_synced, local_checksum, validated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(product_id, item_id) DO UPDATE SET
+                    filename = excluded.filename,
+                    api_last_modified = excluded.api_last_modified,
+                    api_checksum = excluded.api_checksum,
+                    local_path = excluded.local_path,
+                    local_last_synced = excluded.local_last_synced,
+                    local_checksum = excluded.local_checksum,
+                    validated = excluded.validated;
+                """
+        if cache:
+            datestamp = datetime.min.isoformat()
+            query = """
+                INSERT INTO files (
+                    product_id, item_id, filename, api_last_modified, api_checksum,
+                    local_path, local_last_synced, local_checksum, validated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(product_id, item_id) DO NOTHING
+                """
+
+        with db_conn:
+            db_conn.execute(
+                query,
+                (
+                    product_id, item_id, item["filename"], api_mod_iso, api_checksum,
+                    str(path), datestamp, local_checksum, validated # Store path as string
+                )
+            )
+        if not cache:
+            logger.debug("Updated DB cache for %s - %s", product["name"], item["filename"])
 
     @suppress_errors(httpx.HTTPError, PermissionError, sqlite3.Error, DrpgApi.PrepareDownloadUrlException)
     def _process_item_db(self, product: Product, item: DownloadItem) -> None:
@@ -276,6 +427,7 @@ class DrpgSync:
         # 3. Validate Checksum (if enabled)
         local_checksum = None
         api_checksum = _newest_checksum(item)
+        validated = False
         if self._config.validate and api_checksum:
             local_checksum = md5(file_content).hexdigest()
             if local_checksum != api_checksum:
@@ -286,7 +438,8 @@ class DrpgSync:
                 # Do NOT update DB if checksum fails validation
                 return
             else:
-                 logger.debug("Checksum validated for %s - %s", product["name"], item["filename"])
+                validated = True
+                logger.debug("Checksum validated for %s - %s", product["name"], item["filename"])
 
         # 4. Write File
         try:
@@ -296,32 +449,17 @@ class DrpgSync:
         except OSError as e:
             logger.error("Failed to write file %s: %s", path, e)
             return # Don't update DB if write fails
-
-        # 5. Update Database
+        
         now_iso = datetime.now(dt_timezone.utc).isoformat()
-        api_mod_iso = product["fileLastModified"] # Already ISO string
+        
+        db_conn = sqlite3.connect(self._config.db_path, isolation_level=None) # Autocommit mode
+        db_conn.row_factory = sqlite3.Row # Access columns by name
+        db_conn.execute("PRAGMA foreign_keys = ON;")
+        self._update_file_db(product, item, now_iso, db_conn, validated, api_checksum, local_checksum)
+        if db_conn:
+            db_conn.close()
+            db_conn = None # type: ignore
 
-        with self._db_conn:
-            self._db_conn.execute(
-                """
-                INSERT INTO files (
-                    product_id, item_id, filename, api_last_modified, api_checksum,
-                    local_path, local_last_synced, local_checksum
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(product_id, item_id) DO UPDATE SET
-                    filename = excluded.filename,
-                    api_last_modified = excluded.api_last_modified,
-                    api_checksum = excluded.api_checksum,
-                    local_path = excluded.local_path,
-                    local_last_synced = excluded.local_last_synced,
-                    local_checksum = excluded.local_checksum;
-                """,
-                (
-                    product_id, item_id, item["filename"], api_mod_iso, api_checksum,
-                    str(path), now_iso, local_checksum # Store path as string
-                )
-            )
-        logger.debug("Updated DB cache for %s - %s", product["name"], item["filename"])
 
 
     def _cleanup_db(self) -> None:

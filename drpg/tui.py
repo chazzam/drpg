@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-import json # For config saving/loading
 import sys
 import functools # Added for partial application
 from logging.handlers import QueueHandler, QueueListener
@@ -10,88 +9,19 @@ from queue import Queue
 import pyperclip # Added for clipboard access
 
 # Import core drpg components
-import os # Needed for default db path logic
 from drpg.config import Config
 from drpg.sync import DrpgSync
-# Reuse the default db path logic if possible, or replicate it
-# Let's replicate for simplicity here to avoid potential import cycles/issues
-def _default_db_path_tui() -> Path:
-    # Simple cross-platform default in user's home directory or config dir
-    config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return config_home / "drpg" / "library.db"
+from drpg.cmd import load_config, save_config, _default_db_path, _default_config_dir()
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, VerticalScroll
 from textual.logging import TextualHandler # For TUI logging
-from textual.app import App, ComposeResult
-from textual.containers import Container, VerticalScroll
 from textual.events import Key # Added for on_key
-from textual.logging import TextualHandler # For TUI logging
 from textual.reactive import var
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, Log, Static, Switch, Label, ProgressBar # Added ProgressBar
 
-# Configuration file path
-CONFIG_FILE = Path.home() / ".drpg_tui_config.json"
 
-# Default configuration
-DEFAULT_CONFIG = {
-    "library_path": str(Path.home() / "DRPG_TUI_Downloads"),
-    "api_token": "", # Default to empty
-    "use_checksums": False,
-    "validate": False,
-    "compatibility_mode": False,
-    "omit_publisher": False,
-    "threads": 5,
-    "log_level": "INFO",
-    "dry_run": False,
-    "db_path": str(_default_db_path_tui()), # Add default db_path
-}
-
-# --- Configuration Loading/Saving ---
-def load_config() -> dict:
-    """Loads configuration from JSON file, returning defaults if not found or invalid."""
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                data = json.load(f)
-                # Ensure all keys are present, add defaults if missing
-                config = DEFAULT_CONFIG.copy()
-                # Ensure loaded keys exist in defaults before updating
-                valid_data = {k: v for k, v in data.items() if k in config}
-                config.update(valid_data) # Overwrite defaults with loaded data
-                # Ensure specific types
-                config["threads"] = int(config.get("threads", 5))
-                # Ensure paths are strings for JSON, but we'll convert later
-                config["library_path"] = str(config.get("library_path", DEFAULT_CONFIG["library_path"]))
-                config["db_path"] = str(config.get("db_path", DEFAULT_CONFIG["db_path"]))
-                return config
-        except (json.JSONDecodeError, IOError, ValueError, TypeError) as e: # Added TypeError
-            # Use basic print for early errors before logging might be set up
-            print(f"Error loading config file {CONFIG_FILE}: {e}. Using defaults.", file=sys.stderr)
-            return DEFAULT_CONFIG.copy()
-    else:
-        return DEFAULT_CONFIG.copy()
-
-def save_config(config_data: dict) -> None:
-    """Saves configuration to JSON file, ensuring paths are strings."""
-    try:
-        # Create a copy to modify for saving
-        save_data = config_data.copy()
-        # Ensure paths are strings
-        if isinstance(save_data.get("library_path"), Path):
-             save_data["library_path"] = str(save_data["library_path"])
-        if isinstance(save_data.get("db_path"), Path):
-             save_data["db_path"] = str(save_data["db_path"])
-
-        # Ensure parent directory for config file exists
-        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(save_data, f, indent=4)
-        logging.info(f"Configuration saved to {CONFIG_FILE}")
-    except IOError as e:
-        logging.error(f"Error saving config file {CONFIG_FILE}: {e}")
 
 # --- Screens ---
 
@@ -183,7 +113,7 @@ class SettingsScreen(Screen):
         yield Header()
         with VerticalScroll(id="settings-form"):
             yield Label("API Token:", classes="label")
-            yield Input(config_data.get("api_token", ""), id="api_token", password=True)
+            yield Input(config_data.get("token", ""), id="token", password=True)
 
             yield Label("Library Path:", classes="label")
             yield Input(config_data.get("library_path", ""), id="library_path")
@@ -226,7 +156,7 @@ class SettingsScreen(Screen):
 
     def action_save_settings(self) -> None:
         new_config = self.app.config_data.copy()
-        new_config["api_token"] = self.query_one("#api_token", Input).value
+        new_config["token"] = self.query_one("#token", Input).value
         new_config["library_path"] = self.query_one("#library_path", Input).value
         try:
             threads_value = int(self.query_one("#threads", Input).value)
@@ -246,7 +176,7 @@ class SettingsScreen(Screen):
         new_config["dry_run"] = self.query_one("#dry_run", Switch).value
 
         # Preserve db_path (it's not editable here)
-        new_config["db_path"] = self.app.config_data.get("db_path", DEFAULT_CONFIG["db_path"])
+        new_config["db_path"] = self.app.config_data.get("db_path", _default_db_path())
 
         # TODO: Update log level
 
@@ -470,7 +400,7 @@ class DrpgTuiApp(App[None]):
 
 def run_tui() -> None:
     """Configure logging and run the Textual TUI application."""
-    log_filename = Path.home() / ".drpg_tui.log" # Log to home dir
+    log_filename = _default_config_dir() / "drpg_tui.log" # Log to home dir
     # Configure root logger - TextualHandler will capture logs sent here
     # File logging for persistent logs
     logging.basicConfig(
@@ -487,7 +417,7 @@ def run_tui() -> None:
     # Set httpx log level based on initial config or default
     # This needs to be done *after* basicConfig
     config = load_config()
-    app_log_level_name = config.get("log_level", "INFO").upper()
+    app_log_level_name = config.log_level.upper()
     app_log_level = getattr(logging, app_log_level_name, logging.INFO)
     if app_log_level <= logging.DEBUG:
         httpx_log_level = logging.DEBUG

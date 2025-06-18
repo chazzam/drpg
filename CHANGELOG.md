@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 2025.8.27
+* unified Config across all run modes
+* add `--use-cached-products` that pulls from the local DB to continue downloading
+* pass processing to threads to determine if a download is needed
+
 ## 2025.7.8
 * automatically retry failed API requests
 * support httpx 0.27-0.28+

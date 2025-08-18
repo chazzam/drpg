@@ -17,3 +17,4 @@ class Config:
     omit_publisher: bool
     threads: int
     db_path: Path
+    print_config: bool

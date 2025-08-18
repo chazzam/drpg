@@ -68,7 +68,9 @@ class DrpgApi:
             "index": item_id,
             "getChecksums": 0,  # Official clients defaults to 1
         }
-        resp = self._client.get(f"{self.API_URL}/order_products/{product_id}/prepare", params=task_params)
+        resp = self._client.get(
+            f"{self.API_URL}/order_products/{product_id}/prepare", params=task_params
+        )
 
         def _parse_message(resp) -> PrepareDownloadUrlResponse:
             message: PrepareDownloadUrlResponse = resp.json()
@@ -101,7 +103,9 @@ class DrpgApi:
         while (data := _parse_message(resp))["status"].startswith("Preparing"):
             logger.debug("Waiting for download link for: %s - %s", product_id, item_id)
             sleep(2)
-            resp = self._client.get(f"{self.API_URL}/order_products/{product_id}/check", params=task_params)
+            resp = self._client.get(
+                f"{self.API_URL}/order_products/{product_id}/check", params=task_params
+            )
 
         logger.debug("Got download link for: %s - %s", product_id, item_id)
         return data

@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import argparse
 import configparser
-import json # For config saving/loading
+import json  # For config saving/loading
 import logging
-import os # Needed for default db path logic
+import os  # Needed for default db path logic
 import os.path
 import platform
 import re
 import signal
 import sys
 from os import environ
-from pathlib import Path, PurePath
+from pathlib import Path
 from traceback import format_exception
 from typing import TYPE_CHECKING
 
@@ -45,12 +45,16 @@ def run() -> None:
         f"  - Library: {config.library_path}\n"
         f"  - DB: {config.db_path}\n"
         f"  - Use Checksums: {config.use_checksums}\n"
+        f"  - Use Cached Products: {config.use_cached_products}\n"
         f"  - Validate: {config.validate}\n"
         f"  - Threads: {config.threads}\n\n"
     )
+    if config.print_config:
+        return
     DrpgSync(config).sync()
 
     save_config(vars(config))
+
 
 def _default_library_dir() -> Path:
     os_name = platform.system()
@@ -72,6 +76,7 @@ def _default_library_dir() -> Path:
         dir = Path.cwd()
     return dir / "DriveThruRPG"
 
+
 def _default_config_dir() -> Path:
     os_name = platform.system()
     if os_name == "Linux":
@@ -86,13 +91,14 @@ def _default_config_dir() -> Path:
 def _default_db_path() -> Path:
     return _default_config_dir() / "library.db"
 
+
 # Configuration file path
 CONFIG_FILE = _default_config_dir() / "drpg_config.json"
 
 # Default configuration
 DEFAULT_CONFIG = {
     "library_path": _default_library_dir(),
-    "token": "", # Default to empty
+    "token": "",  # Default to empty
     "use_checksums": False,
     "use_cached_products": False,
     "validate": True,
@@ -101,8 +107,10 @@ DEFAULT_CONFIG = {
     "threads": 5,
     "log_level": "INFO",
     "dry_run": False,
-    "db_path": str(_default_db_path()), # Add default db_path
+    "db_path": str(_default_db_path()),  # Add default db_path
+    "print_config": False,
 }
+
 
 # --- Configuration Loading/Saving ---
 def load_config() -> Config:
@@ -115,18 +123,21 @@ def load_config() -> Config:
                 data = json.load(f)
                 # Ensure loaded keys exist in defaults before updating
                 valid_data = {k: v for k, v in data.items() if k in config}
-                config.update(valid_data) # Overwrite defaults with loaded data
+                config.update(valid_data)  # Overwrite defaults with loaded data
                 # Ensure specific types
                 config["threads"] = int(config.get("threads", 5))
                 # Ensure paths are strings for JSON, but we'll convert later
-                config["library_path"] = str(config.get("library_path", DEFAULT_CONFIG["library_path"]))
+                config["library_path"] = str(
+                    config.get("library_path", DEFAULT_CONFIG["library_path"])
+                )
                 config["db_path"] = str(config.get("db_path", DEFAULT_CONFIG["db_path"]))
-        except (json.JSONDecodeError, IOError, ValueError, TypeError) as e: # Added TypeError
+        except (json.JSONDecodeError, IOError, ValueError, TypeError) as e:  # Added TypeError
             # Use basic print for early errors before logging might be set up
             print(f"Error loading config file {CONFIG_FILE}: {e}. Using defaults.", file=sys.stderr)
             config = DEFAULT_CONFIG.copy()
     # Parse any command line args
     return _parse_cli(config)
+
 
 def save_config(config_data: dict) -> None:
     """Saves configuration to JSON file, ensuring paths are strings."""
@@ -136,9 +147,9 @@ def save_config(config_data: dict) -> None:
         save_data["dry_run"] = False
         # Ensure paths are strings
         if isinstance(save_data.get("library_path"), Path):
-             save_data["library_path"] = str(save_data["library_path"])
+            save_data["library_path"] = str(save_data["library_path"])
         if isinstance(save_data.get("db_path"), Path):
-             save_data["db_path"] = str(save_data["db_path"])
+            save_data["db_path"] = str(save_data["db_path"])
 
         # Ensure parent directory for config file exists
         CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -148,6 +159,7 @@ def save_config(config_data: dict) -> None:
         logging.info(f"Configuration saved to {CONFIG_FILE}")
     except IOError as e:
         logging.error(f"Error saving config file {CONFIG_FILE}: {e}")
+
 
 def _parse_cli(config: dict, args: CliArgs | None = None) -> Config:
     parser = argparse.ArgumentParser(
@@ -185,8 +197,10 @@ def _parse_cli(config: dict, args: CliArgs | None = None) -> Config:
     )
     parser.add_argument(
         "--use-cached-products",
+        "-C",
         action="store_true",
-        default=environ.get("DRPG_USE_CACHED_PRODUCTS", str(config["use_cached_products"])).lower() == "false",
+        default=False
+        == "false",
         help="Skip updating products list from the API",
     )
     parser.add_argument(
@@ -222,12 +236,20 @@ def _parse_cli(config: dict, args: CliArgs | None = None) -> Config:
         help=f"Path to the library metadata database. Defaults to {config["db_path"]}",
     )
 
+    parser.add_argument(
+        "--print-config", "-P",
+        action="store_true",
+        default=False,
+        help="Print the configuration and exit",
+    )
+
     compability_group = parser.add_mutually_exclusive_group()
 
     compability_group.add_argument(
         "--compatibility-mode",
         action="store_true",
-        default=environ.get("DRPG_COMPATIBILITY_MODE", str(config["compatibility_mode"])).lower() == "true",
+        default=environ.get("DRPG_COMPATIBILITY_MODE", str(config["compatibility_mode"])).lower()
+        == "true",
         help="Name files and directories the way that DriveThruRPG's client app does.",
     )
     compability_group.add_argument(
@@ -240,18 +262,22 @@ def _parse_cli(config: dict, args: CliArgs | None = None) -> Config:
     parsed_args = parser.parse_args(args)
     print(f"parsed args: {parsed_args}")
 
+    # Update the saved config with the new command line arguments
+    config.update(vars(parsed_args))
+
     cfg = Config()
-    cfg.token = parsed_args.token
-    cfg.library_path = parsed_args.library_path
-    cfg.use_checksums = parsed_args.use_checksums
-    cfg.use_cached_products = parsed_args.use_cached_products
-    cfg.validate = parsed_args.validate
-    cfg.log_level = parsed_args.log_level
-    cfg.dry_run = parsed_args.dry_run
-    cfg.compatibility_mode = parsed_args.compatibility_mode
-    cfg.omit_publisher = parsed_args.omit_publisher
-    cfg.threads = parsed_args.threads
-    cfg.db_path = parsed_args.db_path
+    cfg.token = config["token"]
+    cfg.library_path = config["library_path"]
+    cfg.use_checksums = config["use_checksums"]
+    cfg.use_cached_products = config["use_cached_products"]
+    cfg.validate = config["validate"]
+    cfg.log_level = config["log_level"]
+    cfg.dry_run = config["dry_run"]
+    cfg.compatibility_mode = config["compatibility_mode"]
+    cfg.omit_publisher = config["omit_publisher"]
+    cfg.threads = config["threads"]
+    cfg.db_path = config["db_path"]
+    cfg.print_config = config["print_config"]
 
     return cfg
 
@@ -265,7 +291,7 @@ def _setup_logger(level_name: str) -> None:
     else:
         format = "%(message)s"
 
-    log_filename = _default_config_dir() / "drpg.log" # Log to home dir
+    log_filename = _default_config_dir() / "drpg.log"  # Log to home dir
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(level)
@@ -274,7 +300,7 @@ def _setup_logger(level_name: str) -> None:
         format=format,
         handlers=[
             handler,
-            logging.FileHandler(log_filename, mode='a'),
+            logging.FileHandler(log_filename, mode="a"),
         ],
         level=level,
     )

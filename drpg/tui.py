@@ -3,30 +3,41 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import sys
-import functools # Added for partial application
+import functools  # Added for partial application
 from logging.handlers import QueueHandler, QueueListener
 from queue import Queue
-import pyperclip # Added for clipboard access
+import pyperclip  # Added for clipboard access
 
 # Import core drpg components
 from drpg.config import Config
 from drpg.sync import DrpgSync
-from drpg.cmd import load_config, save_config, _default_db_path, _default_config_dir()
+from drpg.cmd import load_config, save_config, _default_db_path, _default_config_dir
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, VerticalScroll
-from textual.logging import TextualHandler # For TUI logging
-from textual.events import Key # Added for on_key
+from textual.logging import TextualHandler  # For TUI logging
+from textual.events import Key  # Added for on_key
 from textual.reactive import var
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Input, Log, Static, Switch, Label, ProgressBar # Added ProgressBar
-
+from textual.widgets import (
+    Button,
+    Footer,
+    Header,
+    Input,
+    Log,
+    Static,
+    Switch,
+    Label,
+    ProgressBar,
+)  # Added ProgressBar
 
 
 # --- Screens ---
 
+
 class MainScreen(Screen):
     """Main screen with options."""
+
     BINDINGS = [
         ("s", "show_settings", "Settings"),
         ("q", "request_quit", "Quit"),
@@ -36,13 +47,16 @@ class MainScreen(Screen):
         config_data = self.app.config_data
         with Container(id="main-container"):
             yield Header()
-            yield Label(f"Library Path: {config_data.get('library_path', 'Not Set')}", id="library-path-display")
+            yield Label(
+                f"Library Path: {config_data.get('library_path', 'Not Set')}",
+                id="library-path-display",
+            )
             # Disable sync button if token is not set
             yield Button(
                 "Sync Library",
                 id="sync",
                 variant="primary",
-                disabled=not config_data.get("api_token")
+                disabled=not config_data.get("api_token"),
             )
             yield Button("Settings", id="settings")
             yield Button("Quit", id="quit", variant="error")
@@ -68,7 +82,11 @@ class MainScreen(Screen):
             if self.app.config_data.get("api_token"):
                 self.app.push_screen(SyncScreen())
             else:
-                self.app.notify("API Token not set. Please configure in Settings.", title="Error", severity="error")
+                self.app.notify(
+                    "API Token not set. Please configure in Settings.",
+                    title="Error",
+                    severity="error",
+                )
         elif event.button.id == "settings":
             self.app.action_show_settings()
 
@@ -84,14 +102,17 @@ class MainScreen(Screen):
         """Updates the library path display."""
         try:
             path_display = self.query_one("#library-path-display", Label)
-            path_display.update(f"Library Path: {self.app.config_data.get('library_path', 'Not Set')}")
-            self.update_sync_button_status() # Also update sync button status
+            path_display.update(
+                f"Library Path: {self.app.config_data.get('library_path', 'Not Set')}"
+            )
+            self.update_sync_button_status()  # Also update sync button status
         except Exception as e:
             logging.error(f"Could not update main screen path display: {e}")
 
 
 class SettingsScreen(Screen):
     """Screen for configuring DRPG settings."""
+
     BINDINGS = [
         ("escape", "app.pop_screen", "Back"),
         ("ctrl+s", "save_settings", "Save"),
@@ -106,7 +127,7 @@ class SettingsScreen(Screen):
             if self.app.focused is api_token_input:
                 logging.info("Ctrl+V detected while API token input focused.")
                 self.action_paste_api_token()
-                event.prevent_default() # Stop the Input widget from also handling it
+                event.prevent_default()  # Stop the Input widget from also handling it
 
     def compose(self) -> ComposeResult:
         config_data = self.app.config_data
@@ -163,8 +184,10 @@ class SettingsScreen(Screen):
             if threads_value > 0:
                 new_config["threads"] = threads_value
             else:
-                 self.app.notify("Threads must be a positive number.", title="Error", severity="error")
-                 return
+                self.app.notify(
+                    "Threads must be a positive number.", title="Error", severity="error"
+                )
+                return
         except ValueError:
             self.app.notify("Invalid number for threads.", title="Error", severity="error")
             return
@@ -180,8 +203,8 @@ class SettingsScreen(Screen):
 
         # TODO: Update log level
 
-        self.app.config_data = new_config # Update app's config
-        save_config(self.app.config_data) # Save the updated config
+        self.app.config_data = new_config  # Update app's config
+        save_config(self.app.config_data)  # Save the updated config
         self.app.notify("Settings saved.", title="Success")
 
         try:
@@ -206,22 +229,25 @@ class SettingsScreen(Screen):
             logging.error(f"Clipboard error: {e}")
             error_message = f"Could not access clipboard: {e}"
             # Check if on Linux and provide a more specific hint
-            if sys.platform.startswith('linux'):
+            if sys.platform.startswith("linux"):
                 error_message += "\n\nOn Linux, this often means 'xclip' or 'xsel' is not installed.\nTry: sudo apt install xclip (or equivalent for your distribution)."
             # Use a longer timeout for the more detailed message
             self.app.notify(error_message, title="Clipboard Error", severity="error", timeout=10)
-        except Exception as e: # Catch potential query errors etc.
+        except Exception as e:  # Catch potential query errors etc.
             logging.error(f"Error during paste action: {e}")
-            self.app.notify("An unexpected error occurred during paste.", title="Error", severity="error")
+            self.app.notify(
+                "An unexpected error occurred during paste.", title="Error", severity="error"
+            )
 
 
 class SyncScreen(Screen):
     """Screen for displaying sync progress and logs."""
+
     BINDINGS = [
         ("escape", "request_pop_screen", "Back (if finished)"),
     ]
 
-    sync_running = var(False) # Reactive variable to track sync status
+    sync_running = var(False)  # Reactive variable to track sync status
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -232,7 +258,7 @@ class SyncScreen(Screen):
 
     def on_mount(self) -> None:
         """Start the sync process when the screen is mounted."""
-        self.query_one("#sync-log", Log).clear() # Clear log on new sync
+        self.query_one("#sync-log", Log).clear()  # Clear log on new sync
         self.run_sync_worker()
 
     def run_sync_worker(self) -> None:
@@ -262,25 +288,34 @@ class SyncScreen(Screen):
                 # Map TUI config key "api_token" to Config attribute "token"
                 config_key = key
                 if key == "api_token":
-                    config_key = "token" # Map the key name
+                    config_key = "token"  # Map the key name
 
                 # Check if the *target* attribute name exists in the Config class definition
                 # (We can check against Config.__annotations__ or Config.__dataclass_fields__)
-                if config_key in Config.__annotations__: # Check against the class definition
+                if config_key in Config.__annotations__:  # Check against the class definition
                     # Special handling for paths
                     if config_key == "library_path":
-                        setattr(sync_config, config_key, library_path) # Use the already created Path object
+                        setattr(
+                            sync_config, config_key, library_path
+                        )  # Use the already created Path object
                     elif config_key == "db_path":
-                         setattr(sync_config, config_key, db_path) # Use the already created Path object
+                        setattr(
+                            sync_config, config_key, db_path
+                        )  # Use the already created Path object
                     # Ensure threads is int
                     elif config_key == "threads":
-                         setattr(sync_config, config_key, int(value))
+                        setattr(sync_config, config_key, int(value))
                     # Set other attributes directly
                     else:
                         setattr(sync_config, config_key, value)
                 # else: # Optional: Log if a key from config doesn't match any Config attribute
                 #    logging.warning(f"Config key '{key}' not found in Config class, skipping.")
-        except (KeyError, ValueError, TypeError, Exception) as e: # Catch potential errors during config creation
+        except (
+            KeyError,
+            ValueError,
+            TypeError,
+            Exception,
+        ) as e:  # Catch potential errors during config creation
             log_widget.write(f"[bold red]Error creating config:[/bold red] {e}")
             status_widget.update("[bold red]Sync failed (Config Error)[/bold red]")
             self.sync_running = False
@@ -291,10 +326,10 @@ class SyncScreen(Screen):
             # Pass the config object to the worker, not the syncer instance
             target_with_args = functools.partial(self.sync_thread_target, sync_config)
             self.app.run_worker(
-                target_with_args,        # Use the wrapped function with config
-                thread=True,             # Run in a separate thread
-                exclusive=True,          # Prevent other workers running
-                group="sync_worker",     # Group for potential management
+                target_with_args,  # Use the wrapped function with config
+                thread=True,  # Run in a separate thread
+                exclusive=True,  # Prevent other workers running
+                group="sync_worker",  # Group for potential management
                 description="Library synchronization",
             )
         except Exception as e:
@@ -302,7 +337,7 @@ class SyncScreen(Screen):
             status_widget.update("[bold red]Sync failed (Worker Error)[/bold red]")
             self.sync_running = False
 
-    def sync_thread_target(self, sync_config: Config) -> None: # Accept Config object
+    def sync_thread_target(self, sync_config: Config) -> None:  # Accept Config object
         """The actual function executed by the background worker."""
         log_widget = self.query_one("#sync-log", Log)
         status_widget = self.query_one("#sync-status", Static)
@@ -312,17 +347,21 @@ class SyncScreen(Screen):
             syncer = DrpgSync(sync_config)
         except Exception as e:
             # Use call_from_thread for UI updates from worker
-            self.app.call_from_thread(log_widget.write, f"[bold red]Error creating DrpgSync in worker:[/bold red] {e}")
-            self.app.call_from_thread(status_widget.update, "[bold red]Sync failed (Syncer Init Error)[/bold red]")
-            self.sync_running = False # Ensure sync_running is reset
-            return # Stop execution if syncer creation fails
+            self.app.call_from_thread(
+                log_widget.write, f"[bold red]Error creating DrpgSync in worker:[/bold red] {e}"
+            )
+            self.app.call_from_thread(
+                status_widget.update, "[bold red]Sync failed (Syncer Init Error)[/bold red]"
+            )
+            self.sync_running = False  # Ensure sync_running is reset
+            return  # Stop execution if syncer creation fails
 
         # --- Logging Setup for Worker Thread ---
         # Get the root logger used by drpg modules
         drpg_logger = logging.getLogger("drpg")
         # Use TextualHandler to forward logs to the widget
         # Note: TextualHandler is not thread-safe directly, use QueueHandler
-        log_queue = Queue(-1) # Infinite queue size
+        log_queue = Queue(-1)  # Infinite queue size
         queue_handler = QueueHandler(log_queue)
         # Add handler ONLY for the duration of the sync
         drpg_logger.addHandler(queue_handler)
@@ -332,18 +371,24 @@ class SyncScreen(Screen):
         drpg_logger.setLevel(log_level)
 
         # Listener thread in the main app thread to process the queue
-        listener = QueueListener(log_queue, log_widget) # Pass log widget directly
+        listener = QueueListener(log_queue, log_widget)  # Pass log widget directly
         listener.start()
 
         # --- Execute Sync ---
         try:
-            status_widget.update("Syncing...") # Update status via call_from_thread if needed, but direct might work
-            syncer.sync() # This blocks the worker thread
-            self.app.call_from_thread(status_widget.update, "[bold green]Sync finished![/bold green]")
+            status_widget.update(
+                "Syncing..."
+            )  # Update status via call_from_thread if needed, but direct might work
+            syncer.sync()  # This blocks the worker thread
+            self.app.call_from_thread(
+                status_widget.update, "[bold green]Sync finished![/bold green]"
+            )
         except Exception as e:
             # Log the exception to the TUI log widget
             drpg_logger.exception("An error occurred during synchronization.")
-            self.app.call_from_thread(status_widget.update, f"[bold red]Sync failed:[/bold red] {e}")
+            self.app.call_from_thread(
+                status_widget.update, f"[bold red]Sync failed:[/bold red] {e}"
+            )
         finally:
             # --- Cleanup ---
             self.sync_running = False
@@ -362,6 +407,7 @@ class SyncScreen(Screen):
 
 
 # --- Main App ---
+
 
 class DrpgTuiApp(App[None]):
     """A Textual app to manage DriveThruRPG downloads."""
@@ -398,19 +444,20 @@ class DrpgTuiApp(App[None]):
 
 # --- Entry Point ---
 
+
 def run_tui() -> None:
     """Configure logging and run the Textual TUI application."""
-    log_filename = _default_config_dir() / "drpg_tui.log" # Log to home dir
+    log_filename = _default_config_dir() / "drpg_tui.log"  # Log to home dir
     # Configure root logger - TextualHandler will capture logs sent here
     # File logging for persistent logs
     logging.basicConfig(
-        level=logging.INFO, # Set a base level; DrpgSync might override based on config
+        level=logging.INFO,  # Set a base level; DrpgSync might override based on config
         handlers=[
-            logging.FileHandler(log_filename, mode='a'),
-            TextualHandler(), # This handler is used by Textual's Log widget capture
+            logging.FileHandler(log_filename, mode="a"),
+            TextualHandler(),  # This handler is used by Textual's Log widget capture
         ],
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        force=True # Override any existing config
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        force=True,  # Override any existing config
     )
     logging.info("--- Starting DRPG TUI Application ---")
 

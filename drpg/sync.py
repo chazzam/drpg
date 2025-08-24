@@ -13,6 +13,7 @@ from multiprocessing.pool import ThreadPool
 
 # from time import timezone  # Keep this for the timedelta calculation, maybe rename later
 from typing import TYPE_CHECKING, NamedTuple
+from pathlib import Path
 
 import httpx
 
@@ -21,7 +22,6 @@ from drpg.custom_types import Publisher, DownloadItem, Product, Checksum  # Impo
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterator
-    from pathlib import Path
     from typing import Any, Callable
 
     from drpg.config import Config
@@ -132,7 +132,6 @@ class DrpgSync:
             name = str(row["name"])
             pub = str(row["publisher_name"])
             order = int(row["product_id"])
-            lastMod = str(row["last_api_check"])
             cursor = self._db_conn.execute(
                 """
                 SELECT item_id, local_path, api_checksum, api_last_modified
@@ -145,7 +144,9 @@ class DrpgSync:
             if not items:
                 items = []
             files = []
+            lastMod = ""
             for item in items:
+                lastMod = item["api_last_modified"]
                 files.append(
                     DownloadItem(
                         index=item["item_id"],
@@ -181,7 +182,6 @@ class DrpgSync:
 
         # Prepare arguments for parallel processing
         process_item_args = []
-        print(f"  use cache: {self._config.use_cached_products}")
         if not self._config.use_cached_products:
             logger.info("Fetching products list from API")
             self._touched_items.clear()  # Reset for this sync run
@@ -298,6 +298,8 @@ class DrpgSync:
         item_id = item["index"]
         expected_path = self._file_path(product, item)
         db_info = self._get_db_file_info(product_id, item_id)
+        # FIXME: Why does this think everything needs to be updated every time?
+        # It was getting weird path names at one point
 
         if not db_info:
             # If not using the checksum, we won't download it again if it exists.
@@ -305,6 +307,8 @@ class DrpgSync:
             if expected_path.exists():
                 local_checksum = md5(expected_path.read_bytes()).hexdigest()
                 api_checksum = _newest_checksum(item)
+                if not api_checksum:
+                    api_checksum = local_checksum
                 if not self._config.use_checksums and not self._config.validate:
                     self._update_file_db(
                         product, item, self._db_conn, False, api_checksum, local_checksum
@@ -363,6 +367,7 @@ class DrpgSync:
         # Check checksum if enabled
         if self._config.use_checksums:
             api_checksum = _newest_checksum(item)
+            local_checksum = None
             if api_checksum != db_info.api_checksum or not expected_path.exists():
                 logger.debug(
                     "Needs download: %s - %s: API checksum changed ('%s' vs '%s')",
@@ -374,7 +379,7 @@ class DrpgSync:
                 return True
             # If we never validated the file against the checksum,
             # we don't know if the file matches yet
-            if not db_info.validated and expected_path.exists():
+            if expected_path.exists() and not db_info.validated:
                 local_checksum = md5(expected_path.read_bytes()).hexdigest()
                 if api_checksum != local_checksum:
                     logger.debug(
@@ -389,6 +394,8 @@ class DrpgSync:
                 self._update_file_db(
                     product, item, self._db_conn, True, api_checksum, local_checksum
                 )
+                return False
+            elif expected_path.exists():
                 return False
 
         # Fallback: Check if file actually exists at the cached path (maybe deleted manually)
@@ -444,7 +451,8 @@ class DrpgSync:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(product_id, item_id) DO NOTHING
                 """
-
+        if not api_checksum:
+            api_checksum = local_checksum
         with db_conn:
             db_conn.execute(
                 query,
@@ -535,6 +543,12 @@ class DrpgSync:
                 logger.debug("Checksum validated for %s - %s", product["name"], item["filename"])
         else:
             # If we're not validating, it passes!
+            validated = True
+        if not api_checksum:
+            # If the api didn't have a checksum, at least save our local one
+            if not local_checksum:
+                local_checksum = md5(file_content).hexdigest()
+            api_checksum = local_checksum
             validated = True
         return (validated, api_checksum, local_checksum)
 
@@ -632,7 +646,8 @@ class DrpgSync:
             product.get("publisher", {}).get("name", "Others"), self._config.compatibility_mode
         )
         product_name = _normalize_path_part(product["name"], self._config.compatibility_mode)
-        item_name = _normalize_path_part(item["filename"], self._config.compatibility_mode)
+        item_basename = Path(item["filename"]).name
+        item_name = _normalize_path_part(item_basename, self._config.compatibility_mode)
         if self._config.omit_publisher:
             return self._config.library_path / product_name / item_name
         else:

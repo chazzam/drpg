@@ -172,6 +172,7 @@ class DrpgSync:
         yield from prods
 
     def sync(self) -> None:
+        # I don't have an idea yet for letting it download your product list in chunks and resume it
         files = self.get_sync_list()
         self.process_items(files)
 
@@ -220,21 +221,12 @@ class DrpgSync:
     def process_items(self, process_item_args) -> None:
         """Download all new, updated and not yet synced items to a sync directory using DB cache."""
         logger.info("Checking %d items against local cache/filesystem", len(process_item_args))
-        # Use ThreadPool for downloading, but decisions are made sequentially before this
-        items_to_download = []
-        count = 0
-        for product, item in process_item_args:
-            if count % self._page_update == 0:
-                print(".", end="", flush=True)
-            count += 1
-            if self._need_download_db(product, item):
-                items_to_download.append((product, item))
-        print(".")
-
-        logger.info("Found %d items requiring download/update.", len(items_to_download))
-        if items_to_download:
-            with ThreadPool(self._config.threads) as pool:
-                pool.starmap(self._process_item_db, items_to_download)
+        # Use ThreadPool for checking and downloading
+        # Don't do this sequentially because it NEVER FINISHES if you do.
+        # Doing it like this effectively lets you complete it in chunks, and
+        # you can slowly get more of it
+        with ThreadPool(self._config.threads) as pool:
+            pool.starmap(self._process_download_if_needed, process_item_args)
 
         # Cleanup DB - remove items not seen in the API response
         self._cleanup_db()
@@ -277,11 +269,13 @@ class DrpgSync:
                 (product["orderProductId"], product["name"], publisher_name, now),
             )
 
-    def _get_db_file_info(self, product_id: int, item_id: int) -> DbFileInfo | None:
+    def _get_db_file_info(
+        self, product_id: int, item_id: int, db_conn: Connection
+    ) -> DbFileInfo | None:
         """Fetch file metadata from the database."""
-        if not self._db_conn:
+        if not db_conn:
             return
-        cursor = self._db_conn.execute(
+        cursor = db_conn.execute(
             """
             SELECT api_last_modified, api_checksum, local_path, local_last_synced, local_checksum, validated
             FROM files
@@ -292,14 +286,14 @@ class DrpgSync:
         row = cursor.fetchone()
         return DbFileInfo(*row) if row else None
 
-    def _need_download_db(self, product: Product, item: DownloadItem) -> bool:
+    def _need_download_db(self, product: Product, item: DownloadItem, db_conn: Connection) -> bool:
         """Check DB cache and filesystem to determine if download is needed."""
+        if not db_conn:
+            return False
         product_id = product["orderProductId"]
         item_id = item["index"]
         expected_path = self._file_path(product, item)
-        db_info = self._get_db_file_info(product_id, item_id)
-        # FIXME: Why does this think everything needs to be updated every time?
-        # It was getting weird path names at one point
+        db_info = self._get_db_file_info(product_id, item_id, db_conn)
 
         if not db_info:
             # If not using the checksum, we won't download it again if it exists.
@@ -311,7 +305,7 @@ class DrpgSync:
                     api_checksum = local_checksum
                 if not self._config.use_checksums and not self._config.validate:
                     self._update_file_db(
-                        product, item, self._db_conn, False, api_checksum, local_checksum
+                        product, item, db_conn, False, api_checksum, local_checksum
                     )
                     logger.info(
                         "File exists, not updating: %s - %s", product["name"], item["filename"]
@@ -328,9 +322,7 @@ class DrpgSync:
                     )
                     return True
 
-                self._update_file_db(
-                    product, item, self._db_conn, True, api_checksum, local_checksum
-                )
+                self._update_file_db(product, item, db_conn, True, api_checksum, local_checksum)
                 logger.info("File exists, Up to date: %s - %s", product["name"], item["filename"])
                 return False
             else:
@@ -368,7 +360,14 @@ class DrpgSync:
         if self._config.use_checksums:
             api_checksum = _newest_checksum(item)
             local_checksum = None
-            if api_checksum != db_info.api_checksum or not expected_path.exists():
+            if not expected_path.exists():
+                logger.debug(
+                    "Needs download: %s - %s: No Local File Available",
+                    product["name"],
+                    item["filename"],
+                )
+                return True
+            if api_checksum != db_info.api_checksum:
                 logger.debug(
                     "Needs download: %s - %s: API checksum changed ('%s' vs '%s')",
                     product["name"],
@@ -391,9 +390,7 @@ class DrpgSync:
                     )
                     return True
                 # We have now validated the download, so update the db as such
-                self._update_file_db(
-                    product, item, self._db_conn, True, api_checksum, local_checksum
-                )
+                self._update_file_db(product, item, db_conn, True, api_checksum, local_checksum)
                 return False
             elif expected_path.exists():
                 return False
@@ -529,15 +526,23 @@ class DrpgSync:
         if self._config.validate and api_checksum:
             local_checksum = md5(file_content).hexdigest()
             if local_checksum != api_checksum:
-                logger.error(
-                    "ERROR: Invalid checksum for %s - %s,"
-                    " skipping saving file (API: %s != Local: %s)",
-                    product["name"],
-                    item["filename"],
-                    api_checksum,
-                    local_checksum,
-                )
-                # Do NOT update DB if checksum fails validation
+                if _match_any_checksum(item, local_checksum):
+                    # If this worked, then our local_checksum found a match. Update accordingly
+                    api_checksum = local_checksum
+                    validated = True
+                    logger.debug(
+                        f"Older Checksum validated for {product["name"]} - {item["filename"]}"
+                    )
+                else:
+                    logger.error(
+                        "ERROR: Invalid checksum for %s - %s,"
+                        " skipping saving file (API: %s != Local: %s)",
+                        product["name"],
+                        item["filename"],
+                        api_checksum,
+                        local_checksum,
+                    )
+                    # Do NOT update DB if checksum fails validation
             else:
                 validated = True
                 logger.debug("Checksum validated for %s - %s", product["name"], item["filename"])
@@ -555,7 +560,7 @@ class DrpgSync:
     @suppress_errors(
         httpx.HTTPError, PermissionError, sqlite3.Error, DrpgApi.PrepareDownloadUrlException
     )
-    def _process_item_db(self, product: Product, item: DownloadItem) -> None:
+    def _process_item_db(self, product: Product, item: DownloadItem, db_conn: Connection) -> None:
         """Download an item and update the database cache."""
         path = self._file_path(product, item)
 
@@ -565,14 +570,13 @@ class DrpgSync:
             # Let's skip DB update for dry run to keep it simple.
             return
 
-        logger.info("Processing: %s - %s", product["name"], item["filename"])
-
         # 1. Get Download URL
         url = self._get_item_url_db(product, item)
 
         # 2. Download File
         file_content = self._download_item_url(product, item, url)
         if not file_content:
+            logger.info(f"Processing: Failed to download {product["name"]} - {item["filename"]}")
             return
 
         # 3. Validate Checksum (if enabled)
@@ -581,23 +585,33 @@ class DrpgSync:
         )
 
         if not validated:
+            logger.info(f"Processing: Failed to validate {product["name"]} - {item["filename"]}")
             return
 
         # 4. Write File
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(file_content)
-            logger.debug("Successfully wrote file: %s", path)
+            logger.info(f"Processed {product["name"]} - {item["filename"]}")
         except OSError as e:
-            logger.error("Failed to write file %s: %s", path, e)
+            logger.error("Processing: Failed to write file %s: %s", path, e)
             return  # Don't update DB if write fails
 
+        if not db_conn:
+            return
+        # If we're not validating, then validated is a don't care
+        if not self._config.validate:
+            validated = False
+        self._update_file_db(product, item, db_conn, validated, api_checksum, local_checksum)
+
+    def _process_download_if_needed(self, product: Product, item: DownloadItem) -> None:
         db_conn = sqlite3.connect(self._config.db_path, isolation_level=None)  # Autocommit mode
-        if not self._db_conn:
+        if not db_conn:
             return
         db_conn.row_factory = sqlite3.Row  # Access columns by name
         db_conn.execute("PRAGMA foreign_keys = ON;")
-        self._update_file_db(product, item, db_conn, validated, api_checksum, local_checksum)
+        if self._need_download_db(product, item, db_conn):
+            self._process_item_db(product, item, db_conn)
         if db_conn:
             db_conn.close()
             db_conn = None  # type: ignore
@@ -691,6 +705,18 @@ def _newest_checksum(item: DownloadItem) -> str | None:
         default={"checksum": None},
         key=lambda s: datetime.fromisoformat(s["checksumDate"]),
     )["checksum"]
+
+
+def _match_any_checksum(item: DownloadItem, chk: str) -> bool:
+    result = False
+    if "checksums" not in item:
+        item["checksums"] = []
+    for check in item["checksums"]:
+        logger.debug(f"CHECKING {item["filename"]}: {chk} vs available {check["checksum"]}")
+        if chk == check["checksum"]:
+            result = True
+            break
+    return result
 
 
 class PathNormalizer:

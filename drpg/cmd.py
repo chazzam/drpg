@@ -189,11 +189,25 @@ def _parse_cli(config: dict, args: CliArgs | None = None) -> Config:
         help=f"Path to your downloads. Defaults to {config["library_path"]}",
     )
     parser.add_argument(
-        "--use-checksums",
-        "-c",
-        action="store_true",
-        default=environ.get("DRPG_USE_CHECKSUMS", str(config["use_checksums"])).lower() == "true",
-        help="Decide if a file needs to be downloaded based on checksums. Slower but more precise",
+        "--db-path",
+        type=Path,
+        default=environ.get("DRPG_DB_PATH", config["db_path"]),
+        help=f"Path to the library metadata database. Defaults to {config["db_path"]}",
+    )
+    parser.add_argument(
+        "--threads",
+        "-x",
+        type=int,
+        default=int(environ.get("DRPG_THREADS", str(config["threads"]))),
+        help="Specify number of threads used to download products",
+    )
+
+    # Don't read these from the config, they will always be off unless manually set to true
+    parser.add_argument(
+        "--log-level",
+        default=logging.getLevelName(20),
+        choices=[logging.getLevelName(i) for i in range(10, 60, 10)],
+        help="How verbose the output should be. Defaults to 'INFO'",
     )
     parser.add_argument(
         "--use-cached-products",
@@ -204,38 +218,25 @@ def _parse_cli(config: dict, args: CliArgs | None = None) -> Config:
         help="Skip updating products list from the API",
     )
     parser.add_argument(
+        "--use-checksums",
+        "-c",
+        action="store_true",
+        default=False,
+        help="Decide if a file needs to be downloaded based on checksums. Slower but more precise",
+    )
+    parser.add_argument(
         "--validate",
         "-v",
         action="store_true",
-        default=environ.get("DRPG_VALIDATE", str(config["validate"])).lower() == "true",
+        default=False,
         help="Validate downloads by calculating checksums",
-    )
-    parser.add_argument(
-        "--log-level",
-        default=environ.get("DRPG_LOG_LEVEL", config["log_level"]),
-        choices=[logging.getLevelName(i) for i in range(10, 60, 10)],
-        help="How verbose the output should be. Defaults to 'INFO'",
-    )
-    parser.add_argument(
-        "--threads",
-        "-x",
-        type=int,
-        default=int(environ.get("DRPG_THREADS", str(config["threads"]))),
-        help="Specify number of threads used to download products",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        default=environ.get("DRPG_DRY_RUN", str(config["dry_run"])).lower() == "true",
+        default=False,
         help="Determine what should be downloaded, but do not download it. Defaults to false",
     )
-    parser.add_argument(
-        "--db-path",
-        type=Path,
-        default=environ.get("DRPG_DB_PATH", config["db_path"]),
-        help=f"Path to the library metadata database. Defaults to {config["db_path"]}",
-    )
-
     parser.add_argument(
         "--print-config", "-P",
         action="store_true",
@@ -260,7 +261,8 @@ def _parse_cli(config: dict, args: CliArgs | None = None) -> Config:
     )
 
     parsed_args = parser.parse_args(args)
-    print(f"parsed args: {parsed_args}")
+    if parsed_args.validate:
+        parsed_args.use_checksums = True
 
     # Update the saved config with the new command line arguments
     config.update(vars(parsed_args))
